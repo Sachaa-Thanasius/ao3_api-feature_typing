@@ -1,9 +1,10 @@
 import datetime
+from typing import Any
 
 from . import utils
 
 
-def __setifnotnone(obj, attr, value):
+def __setifnotnone(obj: object, attr: str, value: Any) -> None:
     if value is not None:
         setattr(obj, attr, value)
 
@@ -155,14 +156,3 @@ def get_work_from_banner(work):
     __setifnotnone(new, "words", words)
     
     return new
-
-def url_join(base, *args):
-    result = base
-    for arg in args:
-        if len(result) > 0 and not result[-1] == "/":
-            result += "/"
-        if len(arg) > 0 and arg[0] != "/":
-            result += arg
-        else:
-            result += arg[1:]
-    return result

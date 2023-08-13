@@ -51,8 +51,8 @@ class Search:
         characters="",
         relationships="",
         tags="",
-        session=None):
-
+        session=None,
+    ):
         self.any_field = any_field
         self.title = title
         self.author = author
@@ -75,7 +75,7 @@ class Search:
         self.sort_column = sort_column
         self.sort_direction = sort_direction
         self.revised_at = revised_at
-        
+
         self.session = session
 
         self.results = None
@@ -89,14 +89,37 @@ class Search:
         """
 
         soup = search(
-            self.any_field, self.title, self.author, self.single_chapter,
-            self.word_count, self.language, self.fandoms, self.rating, self.hits,
-            self.kudos, self.crossovers, self.bookmarks, self.excluded_tags, self.comments, self.completion_status, self.page,
-            self.sort_column, self.sort_direction, self.revised_at, self.session,
-            self.characters, self.relationships, self.tags)
+            self.any_field,
+            self.title,
+            self.author,
+            self.single_chapter,
+            self.word_count,
+            self.language,
+            self.fandoms,
+            self.rating,
+            self.hits,
+            self.kudos,
+            self.crossovers,
+            self.bookmarks,
+            self.excluded_tags,
+            self.comments,
+            self.completion_status,
+            self.page,
+            self.sort_column,
+            self.sort_direction,
+            self.revised_at,
+            self.session,
+            self.characters,
+            self.relationships,
+            self.tags,
+        )
 
         results = soup.find("ol", {"class": ("work", "index", "group")})
-        if results is None and soup.find("p", text="No results found. You may want to edit your search to make it less specific.") is not None:
+        if (
+            results is None
+            and soup.find("p", text="No results found. You may want to edit your search to make it less specific.")
+            is not None
+        ):
             self.results = []
             self.total_results = 0
             self.pages = 0
@@ -106,15 +129,18 @@ class Search:
         for work in results.find_all("li", {"role": "article"}):
             if work.h4 is None:
                 continue
-            
+
             new = get_work_from_banner(work)
             new._session = self.session
             works.append(new)
 
         self.results = works
         maindiv = soup.find("div", {"class": "works-search region", "id": "main"})
-        self.total_results = int(maindiv.find("h3", {"class": "heading"}).getText().replace(',','').replace('.','').strip().split(" ")[0])
+        self.total_results = int(
+            maindiv.find("h3", {"class": "heading"}).getText().replace(",", "").replace(".", "").strip().split(" ")[0]
+        )
         self.pages = ceil(self.total_results / 20)
+
 
 def search(
     any_field="",
@@ -139,7 +165,8 @@ def search(
     session=None,
     characters="",
     relationships="",
-    tags=""):
+    tags="",
+):
     """Returns the results page for the search as a Soup object
 
     Args:
@@ -217,10 +244,7 @@ def search(
 
     url = f"https://archiveofourown.org/works/search?{query.string}"
 
-    if session is None:
-        req = requester.request("get", url)
-    else:
-        req = session.get(url)
+    req = requester.request("get", url) if session is None else session.get(url)
     if req.status_code == 429:
         raise utils.HTTPError("We are being rate-limited. Try again in a while or reduce the number of requests")
     soup = BeautifulSoup(req.content, features="lxml")

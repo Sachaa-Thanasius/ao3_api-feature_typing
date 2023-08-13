@@ -2,15 +2,20 @@ import datetime
 import re
 import time
 from functools import cached_property
+from typing import TYPE_CHECKING, Any, Dict, Mapping, Optional, Tuple, Union
 
 import requests
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, NavigableString, Tag
 
 from . import threadable, utils
 from .requester import requester
 from .series import Series
 from .users import User
-from .works import Work
+from .works import Chapter, Work
+
+
+if TYPE_CHECKING:
+    from threading import Thread
 
 
 class GuestSession:
@@ -18,18 +23,27 @@ class GuestSession:
     AO3 guest session object
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         self.is_authed = False
-        self.authenticity_token = None
+        self.authenticity_token: Optional[str] = None
         self.username = ""
         self.session = requests.Session()
-        
+
+    def __del__(self) -> None:
+        self.session.close()
+
     @property
-    def user(self):
+    def user(self) -> User:
         return User(self.username, self, False)
-    
+
     @threadable.threadable
-    def comment(self, commentable, comment_text, oneshot=False, commentid=None):
+    def comment(
+        self,
+        commentable: Union[Work, Chapter],
+        comment_text: str,
+        oneshot: bool = False,
+        commentid: Optional[Union[str, int]] = None,
+    ) -> requests.Response:
         """Leaves a comment on a specific work.
         This function is threadable.
 
@@ -49,13 +63,11 @@ class GuestSession:
         Returns:
             requests.models.Response: Response object
         """
-        
-        response = utils.comment(commentable, comment_text, self, oneshot, commentid)
-        return response
 
-    
+        return utils.comment(commentable, comment_text, self, oneshot, commentid)
+
     @threadable.threadable
-    def kudos(self, work):
+    def kudos(self, work: Work) -> bool:
         """Leave a 'kudos' in a specific work.
         This function is threadable.
 
@@ -69,48 +81,51 @@ class GuestSession:
         Returns:
             bool: True if successful, False if you already left kudos there
         """
-        
+
         return utils.kudos(work, self)
-        
+
     @threadable.threadable
-    def refresh_auth_token(self):
+    def refresh_auth_token(self) -> None:
         """Refreshes the authenticity token.
         This function is threadable.
 
         Raises:
             utils.UnexpectedResponseError: Couldn't refresh the token
         """
-        
-        # For some reason, the auth token in the root path only works if you're 
+
+        # For some reason, the auth token in the root path only works if you're
         # unauthenticated. To get around that, we check if this is an authed
         # session and, if so, get the token from the profile page.
-        
+
         if self.is_authed:
             req = self.session.get(f"https://archiveofourown.org/users/{self.username}")
         else:
             req = self.session.get("https://archiveofourown.org")
-            
+
         if req.status_code == 429:
-            raise utils.HTTPError("We are being rate-limited. Try again in a while or reduce the number of requests")
-            
+            raise utils.HTTPError
+
         soup = BeautifulSoup(req.content, "lxml")
+        self.authenticity_token = self.extract_authenticity_token(soup)
+
+    @staticmethod
+    def extract_authenticity_token(soup: Tag) -> str:
         token = soup.find("input", {"name": "authenticity_token"})
-        if token is None:
+        if isinstance(token, NavigableString) or token is None:
             raise utils.UnexpectedResponseError("Couldn't refresh token")
-        self.authenticity_token = token.attrs["value"]
-        
-    def get(self, *args, **kwargs):
-        """Request a web page and return a Response object"""  
-        
-        if self.session is None:
+        return token.attrs["value"]
+
+    def get(self, *args: Any, **kwargs: Any) -> requests.Response:
+        """Request a web page and return a Response object"""
+        if not self.session:
             req = requester.request("get", *args, **kwargs)
         else:
             req = requester.request("get", *args, **kwargs, session=self.session)
         if req.status_code == 429:
-            raise utils.HTTPError("We are being rate-limited. Try again in a while or reduce the number of requests")
+            raise utils.HTTPError
         return req
 
-    def request(self, url):
+    def request(self, url: str) -> BeautifulSoup:
         """Request a web page and return a BeautifulSoup object.
 
         Args:
@@ -121,10 +136,9 @@ class GuestSession:
         """
 
         req = self.get(url)
-        soup = BeautifulSoup(req.content, "lxml")
-        return soup
+        return BeautifulSoup(req.content, "lxml")
 
-    def post(self, *args, **kwargs):
+    def post(self, *args: Any, **kwargs: Any) -> requests.Response:
         """Make a post request with the current session
 
         Returns:
@@ -133,18 +147,16 @@ class GuestSession:
 
         req = self.session.post(*args, **kwargs)
         if req.status_code == 429:
-            raise utils.HTTPError("We are being rate-limited. Try again in a while or reduce the number of requests")
+            raise utils.HTTPError
         return req
-    
-    def __del__(self):
-        self.session.close()
+
 
 class Session(GuestSession):
     """
     AO3 session object
     """
 
-    def __init__(self, username, password):
+    def __init__(self, username: str, password: str) -> None:
         """Creates a new AO3 session object
 
         Args:
@@ -158,15 +170,13 @@ class Session(GuestSession):
         super().__init__()
         self.is_authed = True
         self.username = username
-        self.url = "https://archiveofourown.org/users/%s"%self.username
-        
+        self.url = f"https://archiveofourown.org/users/{self.username}"
+
         self.session = requests.Session()
-        
+
         soup = self.request("https://archiveofourown.org/users/login")
-        self.authenticity_token = soup.find("input", {"name": 'authenticity_token'})["value"]
-        payload = {'user[login]': username,
-                   'user[password]': password,
-                   'authenticity_token': self.authenticity_token}
+        self.authenticity_token = self.extract_authenticity_token(soup)
+        payload = {"user[login]": username, "user[password]": password, "authenticity_token": self.authenticity_token}
         post = self.post("https://archiveofourown.org/users/login", params=payload, allow_redirects=False)
         if not post.status_code == 302:
             raise utils.LoginError("Invalid username or password")
@@ -174,119 +184,117 @@ class Session(GuestSession):
         self._subscriptions_url = "https://archiveofourown.org/users/{0}/subscriptions?page={1:d}"
         self._bookmarks_url = "https://archiveofourown.org/users/{0}/bookmarks?page={1:d}"
         self._history_url = "https://archiveofourown.org/users/{0}/readings?page={1:d}"
-        
+
         self._bookmarks = None
         self._subscriptions = None
         self._history = None
-        
-    def __getstate__(self):
-        d = {}
+
+    def __getstate__(self) -> Dict[str, Tuple[Any, bool]]:
+        d: Dict[str, Tuple[Any, bool]] = {}
         for attr in self.__dict__:
-            if isinstance(self.__dict__[attr], BeautifulSoup):
-                d[attr] = (self.__dict__[attr].encode(), True)
+            if isinstance((item := self.__dict__[attr]), BeautifulSoup):
+                d[attr] = (item.encode(), True)
             else:
-                d[attr] = (self.__dict__[attr], False)
+                d[attr] = (item, False)
         return d
-                
-    def __setstate__(self, d):
+
+    def __setstate__(self, d: Mapping[str, Tuple[Any, bool]]):
         for attr in d:
             value, issoup = d[attr]
-            if issoup:
-                self.__dict__[attr] = BeautifulSoup(value, "lxml")
-            else:
-                self.__dict__[attr] = value
-        
-    def clear_cache(self):
+            self.__dict__[attr] = BeautifulSoup(value, "lxml") if issoup else value
+
+    def clear_cache(self) -> None:
         for attr in self.__class__.__dict__:
-            if isinstance(getattr(self.__class__, attr), cached_property):
-                if attr in self.__dict__:
-                    delattr(self, attr)
+            if isinstance(getattr(self.__class__, attr), cached_property) and attr in self.__dict__:
+                delattr(self, attr)
         self._bookmarks = None
         self._subscriptions = None
-        
+
     @cached_property
-    def _subscription_pages(self):
+    def _subscription_pages(self) -> int:
         url = self._subscriptions_url.format(self.username, 1)
         soup = self.request(url)
         pages = soup.find("ol", {"title": "pagination"})
         if pages is None:
             return 1
         n = 1
+        assert isinstance(pages, Tag)
         for li in pages.findAll("li"):
-            text = li.getText()
+            text: str = li.getText()
             if text.isdigit():
                 n = int(text)
         return n
-    
-    def get_work_subscriptions(self, use_threading=False):
+
+    def get_work_subscriptions(self, use_threading: bool = False):
         """
         Get subscribed works. Loads them if they haven't been previously
 
         Returns:
             list: List of work subscriptions
         """
-        
+
         subs = self.get_subscriptions(use_threading)
         return list(filter(lambda obj: isinstance(obj, Work), subs))
-    
-    def get_series_subscriptions(self, use_threading=False):
+
+    def get_series_subscriptions(self, use_threading: bool = False):
         """
         Get subscribed series. Loads them if they haven't been previously
 
         Returns:
             list: List of series subscriptions
         """
-        
+
         subs = self.get_subscriptions(use_threading)
         return list(filter(lambda obj: isinstance(obj, Series), subs))
-    
-    def get_user_subscriptions(self, use_threading=False):
+
+    def get_user_subscriptions(self, use_threading: bool = False):
         """
         Get subscribed users. Loads them if they haven't been previously
 
         Returns:
             list: List of users subscriptions
         """
-        
+
         subs = self.get_subscriptions(use_threading)
         return list(filter(lambda obj: isinstance(obj, User), subs))
-    
-    def get_subscriptions(self, use_threading=False):
+
+    def get_subscriptions(self, use_threading: bool = False):
         """
         Get user's subscriptions. Loads them if they haven't been previously
 
         Returns:
             list: List of subscriptions
         """
-        
+
         if self._subscriptions is None:
             if use_threading:
                 self.load_subscriptions_threaded()
             else:
                 self._subscriptions = []
                 for page in range(self._subscription_pages):
-                    self._load_subscriptions(page=page+1)
+                    self._load_subscriptions(page=page + 1)
         return self._subscriptions
-    
+
     @threadable.threadable
     def load_subscriptions_threaded(self):
         """
         Get subscribed works using threads.
         This function is threadable.
-        """ 
-        
+        """
+
         threads = []
         self._subscriptions = []
         for page in range(self._subscription_pages):
-            threads.append(self._load_subscriptions(page=page+1, threaded=True))
+            threads.append(self._load_subscriptions(page=page + 1, threaded=True))
         for thread in threads:
             thread.join()
 
     @threadable.threadable
-    def _load_subscriptions(self, page=1):        
+    def _load_subscriptions(self, page: int = 1):
         url = self._subscriptions_url.format(self.username, page)
         soup = self.request(url)
         subscriptions = soup.find("dl", {"class": "subscription index group"})
+        assert isinstance(subscriptions, Tag)
         for sub in subscriptions.find_all("dt"):
             type_ = "work"
             user = None
@@ -295,7 +303,7 @@ class Session(GuestSession):
             workname = None
             authors = []
             for a in sub.find_all("a"):
-                if "rel" in a.attrs.keys():
+                if "rel" in a.attrs:
                     if "author" in a["rel"]:
                         authors.append(User(str(a.string), load=False))
                 elif a["href"].startswith("/works"):
@@ -322,48 +330,58 @@ class Session(GuestSession):
                 self._subscriptions.append(new)
 
     @cached_property
-    def _history_pages(self):
+    def _history_pages(self) -> int:
         url = self._history_url.format(self.username, 1)
         soup = self.request(url)
         pages = soup.find("ol", {"title": "pagination"})
         if pages is None:
             return 1
         n = 1
+        assert isinstance(pages, Tag)
         for li in pages.findAll("li"):
-            text = li.getText()
+            text: str = li.getText()
             if text.isdigit():
                 n = int(text)
         return n
 
-    def get_history(self, hist_sleep=3, start_page=0, max_pages=None, timeout_sleep=60):
+    def get_history(
+        self,
+        hist_sleep: int = 3,
+        start_page: int = 0,
+        max_pages: Optional[int] = None,
+        timeout_sleep: int = 60,
+    ):
         """
         Get history works. Loads them if they haven't been previously.
 
-        Arguments:
-          hist_sleep (int to sleep between requests)
-          start_page (int for page to start on, zero-indexed)
-          max_pages  (int for page to end on, zero-indexed)
-          timeout_sleep (int, if set will attempt to recovery from http errors, likely timeouts, if set to None will just attempt to load)
+        takes two arguments the first hist_sleep is an int and is a sleep to run between pages of history to load to
+        avoid hitting the rate limiter, the second is an int of the maximum number of pages of history to load, by
+        default this is None so loads them all.
 
- takes two arguments the first hist_sleep is an int and is a sleep to run between pages of history to load to avoid hitting the rate limiter, the second is an int of the maximum number of pages of history to load, by default this is None so loads them all.
+        Arguments:
+            hist_sleep (int to sleep between requests)
+            start_page (int for page to start on, zero-indexed)
+            max_pages  (int for page to end on, zero-indexed)
+            timeout_sleep (int, if set will attempt to recovery from http errors, likely timeouts, if set to None will
+            just attempt to load)
 
         Returns:
             list: List of tuples (Work, number-of-visits, datetime-last-visited)
         """
-        
+
         if self._history is None:
             self._history = []
             for page in range(start_page, self._history_pages):
                 # If we are attempting to recover from errors then
                 # catch and loop, otherwise just call and go
-                if timeout_sleep is None:
-                    self._load_history(page=page+1)
-                    
+                if not timeout_sleep:
+                    self._load_history(page=page + 1)
+
                 else:
-                    loaded=False
-                    while loaded == False:
+                    loaded = False
+                    while loaded is False:
                         try:
-                            self._load_history(page=page+1)
+                            self._load_history(page=page + 1)
                             # print(f"Read history page {page+1}")
                             loaded = True
 
@@ -382,11 +400,12 @@ class Session(GuestSession):
 
         return self._history
 
-    def _load_history(self, page=1):       
+    def _load_history(self, page: int = 1):
         url = self._history_url.format(self.username, page)
         soup = self.request(url)
         history = soup.find("ol", {"class": "reading work index group"})
-        for item in history.find_all("li", {"role": "article"}):
+        assert isinstance(history, Tag)
+        for item in history.findAll("li", {"role": "article"}):
             # authors = []
             workname = None
             workid = None
@@ -397,85 +416,87 @@ class Session(GuestSession):
 
             visited_date = None
             visited_num = 1
-            for viewed in item.find_all("h4", {"class": "viewed heading" }):
+            for viewed in item.find_all("h4", {"class": "viewed heading"}):
                 data_string = str(viewed)
-                date_str = re.search('<span>Last visited:</span> (\d{2} .+ \d{4})', data_string)
+                date_str = re.search("<span>Last visited:</span> (\d{2} .+ \d{4})", data_string)
                 if date_str is not None:
                     raw_date = date_str.group(1)
-                    date_time_obj = datetime.datetime.strptime(date_str.group(1), '%d %b %Y')
+                    date_time_obj = datetime.datetime.strptime(date_str.group(1), "%d %b %Y")
                     visited_date = date_time_obj
-                    
-                visited_str = re.search('Visited (\d+) times', data_string)
+
+                visited_str = re.search("Visited (\d+) times", data_string)
                 if visited_str is not None:
                     visited_num = int(visited_str.group(1))
-                
 
             if workname != None and workid != None:
                 new = Work(workid, load=False)
                 setattr(new, "title", workname)
                 # setattr(new, "authors", authors)
-                hist_item = [ new, visited_num, visited_date ]
+                hist_item = [new, visited_num, visited_date]
                 # print(hist_item)
                 if new not in self._history:
                     self._history.append(hist_item)
-                
+
     @cached_property
-    def _bookmark_pages(self):
+    def _bookmark_pages(self) -> int:
         url = self._bookmarks_url.format(self.username, 1)
         soup = self.request(url)
         pages = soup.find("ol", {"title": "pagination"})
         if pages is None:
             return 1
         n = 1
+        assert isinstance(pages, Tag)
         for li in pages.findAll("li"):
-            text = li.getText()
+            text: str = li.getText()
             if text.isdigit():
                 n = int(text)
         return n
-    
-    def get_bookmarks(self, use_threading=False):
+
+    def get_bookmarks(self, use_threading: bool = False):
         """
         Get bookmarked works. Loads them if they haven't been previously
 
         Returns:
             list: List of tuples (workid, workname, authors)
         """
-        
+
         if self._bookmarks is None:
             if use_threading:
                 self.load_bookmarks_threaded()
             else:
                 self._bookmarks = []
                 for page in range(self._bookmark_pages):
-                    self._load_bookmarks(page=page+1)
+                    self._load_bookmarks(page=page + 1)
         return self._bookmarks
-    
+
     @threadable.threadable
-    def load_bookmarks_threaded(self):
+    def load_bookmarks_threaded(self) -> None:
         """
         Get bookmarked works using threads.
         This function is threadable.
-        """ 
-        
-        threads = []
+        """
+
+        threads: list[Thread] = []
         self._bookmarks = []
         for page in range(self._bookmark_pages):
-            threads.append(self._load_bookmarks(page=page+1, threaded=True))
+            threads.append(self._load_bookmarks(page=page + 1, threaded=True))
         for thread in threads:
             thread.join()
-    
+
     @threadable.threadable
-    def _load_bookmarks(self, page=1):       
+    def _load_bookmarks(self, page: int = 1) -> None:
         url = self._bookmarks_url.format(self.username, page)
         soup = self.request(url)
         bookmarks = soup.find("ol", {"class": "bookmark index group"})
+        assert isinstance(bookmarks, Tag)
         for bookm in bookmarks.find_all("li", {"class": ["bookmark", "index", "group"]}):
             authors = []
             recommended = False
             workid = -1
             if bookm.h4 is not None:
                 for a in bookm.h4.find_all("a"):
-                    if "rel" in a.attrs.keys():
+                    assert isinstance(a, Tag)
+                    if "rel" in a.attrs:
                         if "author" in a["rel"]:
                             authors.append(User(str(a.string), load=False))
                     elif a.attrs["href"].startswith("/works"):
@@ -484,21 +505,19 @@ class Session(GuestSession):
 
                 # Get whether the bookmark is recommended
                 for span in bookm.p.find_all("span"):
-                    if "title" in span.attrs.keys():
-                        if span["title"] == "Rec":
-                            recommended = True
+                    if "title" in span.attrs and span["title"] == "Rec":
+                        recommended = True
 
-            
                 if workid != -1:
                     new = Work(workid, load=False)
-                    setattr(new, "title", workname)
-                    setattr(new, "authors", authors)
+                    new.title = workname
+                    new.authors = authors
                     setattr(new, "recommended", recommended)
                     if new not in self._bookmarks:
                         self._bookmarks.append(new)
-            
+
     @cached_property
-    def bookmarks(self):
+    def bookmarks(self) -> int:
         """Get the number of your bookmarks.
         Must be logged in to use.
 
@@ -509,27 +528,28 @@ class Session(GuestSession):
         url = self._bookmarks_url.format(self.username, 1)
         soup = self.request(url)
         div = soup.find("div", {"class": "bookmarks-index dashboard filtered region"})
+        assert isinstance(div, Tag)
         h2 = div.h2.text.split()
-        return int(h2[4].replace(',', ''))
-    
-    def get_statistics(self, year=None):
-        year = "All+Years" if year is None else str(year)
-        url = f"https://archiveofourown.org/users/{self.username}/stats?year={year}"
-        soup = self.request(url) 
-        stats = {}
+        return int(h2[4].replace(",", ""))
+
+    def get_statistics(self, year: Optional[int] = None) -> Dict[str, int]:
+        actual_year = "All+Years" if year is None else str(year)
+        url = f"https://archiveofourown.org/users/{self.username}/stats?year={actual_year}"
+        soup = self.request(url)
+        stats: Dict[str, int] = {}
         dt = soup.find("dl", {"class": "statistics meta group"})
-        if dt is not None:
+        if isinstance(dt, Tag):
             for field in dt.findAll("dt"):
-                name = field.getText()[:-1].lower().replace(" ", "_")
+                name: str = field.getText()[:-1].lower().replace(" ", "_")
                 if field.next_sibling is not None and field.next_sibling.next_sibling is not None:
-                    value = field.next_sibling.next_sibling.getText().replace(",", "")
+                    value: str = field.next_sibling.next_sibling.getText().replace(",", "")
                     if value.isdigit():
                         stats[name] = int(value)
-        
+
         return stats
 
     @staticmethod
-    def str_format(string):
+    def str_format(string: str) -> str:
         """Formats a given string
 
         Args:
@@ -552,14 +572,20 @@ class Session(GuestSession):
         Returns:
             works (list): All marked for later works
         """
-        pageRaw = self.request(f"https://archiveofourown.org/users/{self.username}/readings?page=1&show=to-read").find("ol", {"class": "pagination actions"}).find_all("li")
-        maxPage = int(pageRaw[len(pageRaw)-2].text)
+        pageRaw = (
+            self.request(f"https://archiveofourown.org/users/{self.username}/readings?page=1&show=to-read")
+            .find("ol", {"class": "pagination actions"})
+            .find_all("li")
+        )
+        maxPage = int(pageRaw[len(pageRaw) - 2].text)
         works = []
         for page in range(maxPage):
             grabbed = False
             while grabbed == False:
                 try:
-                    workPage = self.request(f"https://archiveofourown.org/users/{self.username}/readings?page={page+1}&show=to-read")
+                    workPage = self.request(
+                        f"https://archiveofourown.org/users/{self.username}/readings?page={page+1}&show=to-read"
+                    )
                     worksRaw = workPage.find_all("li", {"role": "article"})
                     for work in worksRaw:
                         try:

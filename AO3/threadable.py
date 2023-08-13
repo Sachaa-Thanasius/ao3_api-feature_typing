@@ -1,21 +1,23 @@
+import functools
 import threading
+from typing import Any, Callable, TypeVar, Union
 
 
-def threadable(func):
+T = TypeVar("T", bound=Callable[..., Any])
+
+def threadable(func: T):
     """Allows the function to be ran as a thread using the 'threaded' argument"""
-    
-    def new(*args, threaded=False, **kwargs):
+
+    def wrapped(*args: Any, threaded: bool = False, **kwargs: Any) -> Union[threading.Thread, Any]:
         if threaded:
             thread = threading.Thread(target=func, args=args, kwargs=kwargs)
             thread.start()
             return thread
-        else:
-            return func(*args, **kwargs)
         
-    new.__doc__ = func.__doc__
-    new.__name__ = func.__name__
-    new._threadable = True
-    return new
+        return func(*args, **kwargs)
+        
+    wrapped._threadable = True
+    return functools.wraps(func)(wrapped)
             
 class ThreadPool:
     def __init__(self, maximum=None):
