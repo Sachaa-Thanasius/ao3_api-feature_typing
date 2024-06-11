@@ -1,18 +1,14 @@
 import threading
 import time
-from typing import TYPE_CHECKING, Any, List
+from typing import Any, List
 
 import requests
-
-
-if TYPE_CHECKING:
-    from .session import GuestSession
 
 
 class Requester:
     """Requester object"""
 
-    def __init__(self, rqtw: int = -1, timew: int = 60):
+    def __init__(self, rqtw: int = -1, timew: int = 60) -> None:
         """Limits the request rate to prevent HTTP 429 (rate limiting) responses.
         12 request per minute seems to be the limit.
 
@@ -34,6 +30,8 @@ class Requester:
     @rqtw.setter
     def rqtw(self, value: int) -> None:
         self._rqtw = value
+    
+    setRQTW = rqtw.fset
 
     @property
     def timew(self) -> int:
@@ -42,6 +40,8 @@ class Requester:
     @timew.setter
     def timew(self, value: int) -> None:
         self._timew = value
+
+    setTimeW = timew.fset
 
     def request(self, *args: Any, **kwargs: Any) -> requests.Response:
         """Requests a web page once enough time has passed since the last request
@@ -54,10 +54,10 @@ class Requester:
         """
 
         # We've made a bunch of requests, time to rate limit?
-        if self._rqtw != -1:
+        if self.rqtw != -1:
             with self._lock:
-                if len(self._requests) >= self._rqtw:
-                    t = time.time()
+                if len(self._requests) >= self.rqtw:
+                    t = time.monotonic()
                     # Reduce list to only requests made within the current time window
                     while len(self._requests):
                         if t - self._requests[0] >= self._timew:
@@ -65,17 +65,17 @@ class Requester:
                         else:
                             break  # Inside window, the rest of them must be too
                     # Have we used up all available requests within our window?
-                    if len(self._requests) >= self._rqtw:  # Yes
+                    if len(self._requests) >= self.rqtw:  # Yes
                         # Wait until the oldest request exits the window, giving us a slot for the new one
                         time.sleep(self._requests[0] + self._timew - t)
                         # Now outside window, drop it
                         self._requests.pop(0)
 
-                if self._rqtw != -1:
-                    self._requests.append(time.time())
+                if self.rqtw != -1:
+                    self._requests.append(time.monotonic())
                 self.total += 1
         if "session" in kwargs:
-            sess: GuestSession = kwargs.pop("session")
+            sess: requests.Session = kwargs.pop("session")
             req = sess.request(*args, **kwargs)
         else:
             req = requests.request(*args, **kwargs)

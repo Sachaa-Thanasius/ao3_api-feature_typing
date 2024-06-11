@@ -2,7 +2,7 @@ import datetime
 import re
 import time
 from functools import cached_property
-from typing import TYPE_CHECKING, Any, Dict, Mapping, Optional, Tuple, Union
+from typing import TYPE_CHECKING, Any, Dict, List, Mapping, Optional, Tuple, Union
 
 import requests
 from bs4 import BeautifulSoup, NavigableString, Tag
@@ -17,6 +17,7 @@ from .works import Chapter, Work
 if TYPE_CHECKING:
     from threading import Thread
 
+Subscribable = Union[Work, Series, User]
 
 class GuestSession:
     """
@@ -112,7 +113,8 @@ class GuestSession:
     def extract_authenticity_token(soup: Tag) -> str:
         token = soup.find("input", {"name": "authenticity_token"})
         if isinstance(token, NavigableString) or token is None:
-            raise utils.UnexpectedResponseError("Couldn't refresh token")
+            msg = "Couldn't refresh token"
+            raise utils.UnexpectedResponseError(msg)
         return token.attrs["value"]
 
     def get(self, *args: Any, **kwargs: Any) -> requests.Response:
@@ -178,15 +180,16 @@ class Session(GuestSession):
         self.authenticity_token = self.extract_authenticity_token(soup)
         payload = {"user[login]": username, "user[password]": password, "authenticity_token": self.authenticity_token}
         post = self.post("https://archiveofourown.org/users/login", params=payload, allow_redirects=False)
-        if not post.status_code == 302:
-            raise utils.LoginError("Invalid username or password")
+        if post.status_code != 302:
+            msg = "Invalid username or password"
+            raise utils.LoginError(msg)
 
         self._subscriptions_url = "https://archiveofourown.org/users/{0}/subscriptions?page={1:d}"
         self._bookmarks_url = "https://archiveofourown.org/users/{0}/bookmarks?page={1:d}"
         self._history_url = "https://archiveofourown.org/users/{0}/readings?page={1:d}"
 
         self._bookmarks = None
-        self._subscriptions = None
+        self._subscriptions: Optional[list[Union[Work, Series, User]]] = None
         self._history = None
 
     def __getstate__(self) -> Dict[str, Tuple[Any, bool]]:
@@ -225,7 +228,7 @@ class Session(GuestSession):
                 n = int(text)
         return n
 
-    def get_work_subscriptions(self, use_threading: bool = False):
+    def get_work_subscriptions(self, use_threading: bool = False) -> List[Work]:
         """
         Get subscribed works. Loads them if they haven't been previously
 
@@ -234,9 +237,9 @@ class Session(GuestSession):
         """
 
         subs = self.get_subscriptions(use_threading)
-        return list(filter(lambda obj: isinstance(obj, Work), subs))
+        return [obj for obj in subs if isinstance(obj, Work)]
 
-    def get_series_subscriptions(self, use_threading: bool = False):
+    def get_series_subscriptions(self, use_threading: bool = False) -> List[Series]:
         """
         Get subscribed series. Loads them if they haven't been previously
 
@@ -245,9 +248,9 @@ class Session(GuestSession):
         """
 
         subs = self.get_subscriptions(use_threading)
-        return list(filter(lambda obj: isinstance(obj, Series), subs))
+        return [obj for obj in subs if isinstance(obj, Series)]
 
-    def get_user_subscriptions(self, use_threading: bool = False):
+    def get_user_subscriptions(self, use_threading: bool = False) -> List[User]:
         """
         Get subscribed users. Loads them if they haven't been previously
 
@@ -256,9 +259,9 @@ class Session(GuestSession):
         """
 
         subs = self.get_subscriptions(use_threading)
-        return list(filter(lambda obj: isinstance(obj, User), subs))
+        return [obj for obj in subs if isinstance(obj, User)]
 
-    def get_subscriptions(self, use_threading: bool = False):
+    def get_subscriptions(self, use_threading: bool = False) -> List[Subscribable]:
         """
         Get user's subscriptions. Loads them if they haven't been previously
 
@@ -270,27 +273,27 @@ class Session(GuestSession):
             if use_threading:
                 self.load_subscriptions_threaded()
             else:
-                self._subscriptions = []
+                self._subscriptions: list[Subscribable] = []
                 for page in range(self._subscription_pages):
                     self._load_subscriptions(page=page + 1)
         return self._subscriptions
 
     @threadable.threadable
-    def load_subscriptions_threaded(self):
+    def load_subscriptions_threaded(self) -> None:
         """
         Get subscribed works using threads.
         This function is threadable.
         """
 
-        threads = []
-        self._subscriptions = []
+        threads: list[Thread] = []
+        self._subscriptions: list[Union[Work, Series, User]] = []
         for page in range(self._subscription_pages):
-            threads.append(self._load_subscriptions(page=page + 1, threaded=True))
+            threads.append(self._load_subscriptions(page=page + 1, threaded=True)) # Fix
         for thread in threads:
             thread.join()
 
     @threadable.threadable
-    def _load_subscriptions(self, page: int = 1):
+    def _load_subscriptions(self, page: int = 1) -> None:
         url = self._subscriptions_url.format(self.username, page)
         soup = self.request(url)
         subscriptions = soup.find("dl", {"class": "subscription index group"})
@@ -301,7 +304,7 @@ class Session(GuestSession):
             series = None
             workid = None
             workname = None
-            authors = []
+            authors: list[User] = []
             for a in sub.find_all("a"):
                 if "rel" in a.attrs:
                     if "author" in a["rel"]:

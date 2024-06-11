@@ -1,13 +1,19 @@
 from math import ceil
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
+from urllib.parse import urlencode
 
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, Tag
 
-from . import threadable, utils
 from .common import get_work_from_banner
 from .requester import requester
-from .series import Series
-from .users import User
-from .works import Work
+from .threadable import threadable
+from .utils import Constraint, HTTPError
+
+
+if TYPE_CHECKING:
+    from .session import GuestSession
+    from .works import Work
+
 
 DEFAULT = "_score"
 BEST_MATCH = "_score"
@@ -29,30 +35,30 @@ ASCENDING = "asc"
 class Search:
     def __init__(
         self,
-        any_field="",
-        title="",
-        author="",
-        single_chapter=False,
-        word_count=None,
-        language="",
-        fandoms="",
-        rating=None,
-        hits=None,
-        kudos=None,
-        crossovers=None,
-        bookmarks=None,
-        excluded_tags="",
-        comments=None,
-        completion_status=None,
-        page=1,
-        sort_column="",
-        sort_direction="",
-        revised_at="",
-        characters="",
-        relationships="",
-        tags="",
-        session=None,
-    ):
+        any_field: Optional[str] = "",
+        title: str = "",
+        author: str = "",
+        single_chapter: bool = False,
+        word_count: Optional[Constraint] = None,
+        language: str = "",
+        fandoms: str = "",
+        rating: Optional[int] = None,
+        hits: Optional[Constraint] = None,
+        kudos: Optional[Constraint] = None,
+        crossovers: Optional[bool] = None,
+        bookmarks: Optional[Constraint] = None,
+        excluded_tags: str = "",
+        comments: Optional[Constraint] = None,
+        completion_status: Optional[bool] = None,
+        page: int = 1,
+        sort_column: str = "",
+        sort_direction: str = "",
+        revised_at: str = "",
+        characters: str = "",
+        relationships: str = "",
+        tags: str = "",
+        session: Optional[GuestSession] = None,
+    ) -> None:
         self.any_field = any_field
         self.title = title
         self.author = author
@@ -78,12 +84,12 @@ class Search:
 
         self.session = session
 
-        self.results = None
-        self.pages = 0
-        self.total_results = 0
+        self.results: Optional[List[Work]] = None
+        self.pages: int = 0
+        self.total_results: int = 0
 
-    @threadable.threadable
-    def update(self):
+    @threadable
+    def update(self) -> None:
         """Sends a request to the AO3 website with the defined search parameters, and updates all info.
         This function is threadable.
         """
@@ -124,9 +130,11 @@ class Search:
             self.total_results = 0
             self.pages = 0
             return
+        assert isinstance(results, Tag)
 
-        works = []
+        works: List[Work] = []
         for work in results.find_all("li", {"role": "article"}):
+            assert isinstance(work, Tag)
             if work.h4 is None:
                 continue
 
@@ -135,38 +143,44 @@ class Search:
             works.append(new)
 
         self.results = works
-        maindiv = soup.find("div", {"class": "works-search region", "id": "main"})
-        self.total_results = int(
-            maindiv.find("h3", {"class": "heading"}).getText().replace(",", "").replace(".", "").strip().split(" ")[0]
-        )
+        main_div = soup.find("div", {"class": "works-search region", "id": "main"})
+        if isinstance(main_div, Tag):
+            self.total_results = int(
+                main_div.find("h3", {"class": "heading"})
+                .get_text()
+                .replace(",", "")
+                .replace(".", "")
+                .strip()
+                .split(" ")[0],
+            )
         self.pages = ceil(self.total_results / 20)
 
 
 def search(
-    any_field="",
-    title="",
-    author="",
-    single_chapter=False,
-    word_count=None,
-    language="",
-    fandoms="",
-    rating=None,
-    hits=None,
-    kudos=None,
-    crossovers=None,
-    bookmarks=None,
-    excluded_tags="",
-    comments=None,
-    completion_status=None,
-    page=1,
-    sort_column="",
-    sort_direction="",
-    revised_at="",
-    session=None,
-    characters="",
-    relationships="",
-    tags="",
-):
+    any_field: Optional[str] = "",
+    title: str = "",
+    author: str = "",
+    single_chapter: bool = False,
+    word_count: Optional[Constraint] = None,
+    language: str = "",
+    fandoms: str = "",
+    rating: Optional[int] = None,
+    hits: Optional[Constraint] = None,
+    kudos: Optional[Constraint] = None,
+    crossovers: Optional[bool] = None,
+    bookmarks: Optional[Constraint] = None,
+    excluded_tags: str = "",
+    comments: Optional[Constraint] = None,
+    completion_status: Optional[bool] = None,
+    page: int = 1,
+    sort_column: str = "",
+    sort_direction: str = "",
+    revised_at: str = "",
+    session: Optional[GuestSession] = None,
+    characters: str = "",
+    relationships: str = "",
+    tags: str = "",
+) -> BeautifulSoup:
     """Returns the results page for the search as a Soup object
 
     Args:
@@ -180,7 +194,8 @@ def search(
         characters (str, optional): Characters included in the work. Defaults to "".
         relationships (str, optional): Relationships included in the work. Defaults to "".
         tags (str, optional): Additional tags applied to the work. Defaults to "".
-        rating (int, optional): Rating for the work. 9 for Not Rated, 10 for General Audiences, 11 for Teen And Up Audiences, 12 for Mature, 13 for Explicit. Defaults to None.
+        rating (int, optional): Rating for the work. 9 for Not Rated, 10 for General Audiences,
+        11 for Teen And Up Audiences, 12 for Mature, 13 for Explicit. Defaults to None.
         hits (AO3.utils.Constraint, optional): Number of hits. Defaults to None.
         kudos (AO3.utils.Constraint, optional): Number of kudos. Defaults to None.
         crossovers (bool, optional): If specified, if false, exclude crossovers, if true, include only crossovers
@@ -197,55 +212,54 @@ def search(
         bs4.BeautifulSoup: Search result's soup
     """
 
-    query = utils.Query()
-    query.add_field(f"work_search[query]={any_field if any_field != '' else ' '}")
+    query_dict: Dict[str, Any] = {}
+    query_dict["work_search[query]"] = any_field if any_field else " "
     if page != 1:
-        query.add_field(f"page={page}")
+        query_dict["page"] = page
     if title != "":
-        query.add_field(f"work_search[title]={title}")
+        query_dict["work_search[title]"] = title
     if author != "":
-        query.add_field(f"work_search[creators]={author}")
+        query_dict["work_search[creators]"] = author
     if single_chapter:
-        query.add_field(f"work_search[single_chapter]=1")
-    if word_count is not None:
-        query.add_field(f"work_search[word_count]={word_count}")
+        query_dict["work_search[single_chapter]"] = 1
+    if word_count:
+        query_dict["work_search[word_count]"] = str(word_count)
     if language != "":
-        query.add_field(f"work_search[language_id]={language}")
+        query_dict["work_search[language_id]"] = language
     if fandoms != "":
-        query.add_field(f"work_search[fandom_names]={fandoms}")
+        query_dict["work_search[fandom_names]"] = fandoms
     if characters != "":
-        query.add_field(f"work_search[character_names]={characters}")
+        query_dict["work_search[character_names]"] = characters
     if relationships != "":
-        query.add_field(f"work_search[relationship_names]={relationships}")
+        query_dict["work_search[relationship_names]"] = relationships
     if tags != "":
-        query.add_field(f"work_search[freeform_names]={tags}")
+        query_dict["work_search[freeform_names]"] = tags
     if rating is not None:
-        query.add_field(f"work_search[rating_ids]={rating}")
-    if hits is not None:
-        query.add_field(f"work_search[hits]={hits}")
-    if kudos is not None:
-        query.add_field(f"work_search[kudos_count]={kudos}")
+        query_dict["work_search[rating_ids]"] = rating
+    if hits:
+        query_dict["work_search[hits]"] = str(hits)
+    if kudos:
+        query_dict["work_search[kudos_count]"] = str(kudos)
     if crossovers is not None:
-        query.add_field(f"work_search[crossover]={'T' if crossovers else 'F'}")
-    if bookmarks is not None:
-        query.add_field(f"work_search[bookmarks_count]={bookmarks}")
-    if excluded_tags != "":
-        query.add_field(f"work_search[excluded_tag_names]={excluded_tags}")
-    if comments is not None:
-        query.add_field(f"work_search[comments_count]={comments}")
+        query_dict["work_search[crossover]"] = "T" if crossovers else "F"
+    if bookmarks:
+        query_dict["work_search[bookmarks_count]"] = str(bookmarks)
+    if excluded_tags:
+        query_dict["work_search[excluded_tag_names]"] = excluded_tags
+    if comments:
+        query_dict["work_search[comments_count]"] = str(comments)
     if completion_status is not None:
-        query.add_field(f"work_search[complete]={'T' if completion_status else 'F'}")
-    if sort_column != "":
-        query.add_field(f"work_search[sort_column]={sort_column}")
-    if sort_direction != "":
-        query.add_field(f"work_search[sort_direction]={sort_direction}")
-    if revised_at != "":
-        query.add_field(f"work_search[revised_at]={revised_at}")
+        query_dict["work_search[complete]"] = "T" if completion_status else "F"
+    if sort_column:
+        query_dict["work_search[sort_column]"] = sort_column
+    if sort_direction:
+        query_dict["work_search[sort_direction]"] = sort_direction
+    if revised_at:
+        query_dict["work_search[revised_at]"] = revised_at
 
-    url = f"https://archiveofourown.org/works/search?{query.string}"
+    url = f"https://archiveofourown.org/works/search?{urlencode(query_dict)}"
 
     req = requester.request("get", url) if session is None else session.get(url)
     if req.status_code == 429:
-        raise utils.HTTPError("We are being rate-limited. Try again in a while or reduce the number of requests")
-    soup = BeautifulSoup(req.content, features="lxml")
-    return soup
+        raise HTTPError
+    return BeautifulSoup(req.content, features="lxml")

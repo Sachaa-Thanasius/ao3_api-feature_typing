@@ -1,24 +1,35 @@
-import os
 import pickle
 import re
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, Dict, List, NoReturn, Optional, Union
 from urllib.parse import urljoin
 
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, Tag
 
 from .requester import requester
 
 
 if TYPE_CHECKING:
+    from typing_extensions import TypeAlias
+
+    from requests import Response
+
     from .chapters import Chapter
     from .comments import Comment
     from .series import Series
     from .session import GuestSession, Session
+    from .users import User
     from .works import Work
 
+Bookmarkable: TypeAlias = Union[Work, Series]
+Collectable: TypeAlias = Work
+Commentable: TypeAlias = Union[Work, Chapter]
+Kudoable: TypeAlias = Work
+Subscribable: TypeAlias = Union[Work, Series, User]
 
-_FANDOMS: Optional[List[str]] = None
-_LANGUAGES: Optional[List[str]] = None
+# Made these globals lowercase.
+_fandoms: Optional[List[str]] = None
+_languages: Optional[List[str]] = None
 
 AO3_AUTH_ERROR_URL = "https://archiveofourown.org/auth_error"
 AO3_WORK_REGEX = re.compile(r"(?:https://|)(?:www\.|)archiveofourown\.org/works/(?P<ao3_id>\d+)")
@@ -34,6 +45,10 @@ class AO3Error(Exception):
 
 class LoginError(AO3Error):
     """Exception that's raised when an attempt to log in to AO3 fails."""
+
+    def __init__(self, message: Optional[str] = None, errors: Optional[List[str]] = None):
+        message = message or "Login was unsucessful (wrong username or password)"
+        super().__init__(message, errors)
 
 
 class UnloadedError(AO3Error):
@@ -95,7 +110,7 @@ class Query:
 class Constraint:
     """Represents a bounding box of a value"""
 
-    def __init__(self, lowerbound: int = 0, upperbound: Optional[int] = None):
+    def __init__(self, lowerbound: int = 0, upperbound: Optional[int] = None) -> None:
         """Creates a new Constraint object
 
         Args:
@@ -106,14 +121,7 @@ class Constraint:
         self._lb = lowerbound
         self._ub = upperbound
 
-    @property
-    def string(self) -> str:
-        """Returns the string representation of this constraint
-
-        Returns:
-            str: string representation
-        """
-
+    def __str__(self) -> str:
         if self._lb == 0:
             return f"<{self._ub}"
         if self._ub is None:
@@ -123,12 +131,18 @@ class Constraint:
 
         return f"{self._lb}-{self._ub}"
 
-    def __str__(self):
-        return self.string
+    @property
+    def string(self) -> str:
+        """Returns the string representation of this constraint
+
+        Returns:
+            str: string representation
+        """
+        return str(self)
 
 
 def word_count(text: str) -> int:
-    return len(tuple(filter(lambda w: w != "", re.split(" |\n|\t", text))))
+    return len(tuple(word for word in re.split(r" |\n|\t", text) if bool(word)))
 
 
 def set_rqtw(value: int) -> None:
@@ -154,16 +168,17 @@ def load_fandoms() -> None:
         FileNotFoundError: No resource was found
     """
 
-    global _FANDOMS
+    global _fandoms  # noqa: PLW0603
 
-    fandom_path = os.path.join(os.path.dirname(__file__), "resources", "fandoms")
-    if not os.path.isdir(fandom_path):
-        raise FileNotFoundError("No fandom resources have been downloaded. Try AO3.extra.download()")
-    files = os.listdir(fandom_path)
-    _FANDOMS = []
-    for file in files:
-        with open(os.path.join(fandom_path, file), "rb") as f:
-            _FANDOMS += pickle.load(f)
+    fandom_path = Path(__file__).parent / "resources" / "fandoms"
+    if not fandom_path.is_dir():
+        msg = "No fandom resources have been downloaded. Try AO3.extra.download()"
+        raise FileNotFoundError(msg)
+
+    _fandoms = []  # noqa: PLW0603
+    for file in fandom_path.iterdir():
+        with file.open("rb") as f:
+            _fandoms += pickle.load(f)  # noqa: S301
 
 
 def load_languages() -> None:
@@ -173,21 +188,22 @@ def load_languages() -> None:
         FileNotFoundError: No resource was found
     """
 
-    global _LANGUAGES
+    global _languages  # noqa: PLW0603
 
-    language_path = os.path.join(os.path.dirname(__file__), "resources", "languages")
-    if not os.path.isdir(language_path):
-        raise FileNotFoundError("No language resources have been downloaded. Try AO3.extra.download()")
-    files = os.listdir(language_path)
-    _LANGUAGES = []
-    for file in files:
-        with open(os.path.join(language_path, file), "rb") as f:
-            _LANGUAGES += pickle.load(f)
+    language_path = Path(__file__).parent / "resources" / "languages"
+    if not language_path.is_dir():
+        msg = "No language resources have been downloaded. Try AO3.extra.download()"
+        raise FileNotFoundError(msg)
+
+    _languages = []  # noqa: PLW0603
+    for file in language_path.iterdir():
+        with file.open("rb") as f:
+            _languages += pickle.load(f)  # noqa: S301
 
 
-def get_languages():
+def get_languages() -> List[str]:
     """Returns all available languages"""
-    return _LANGUAGES[:]
+    return _languages[:] if _languages else []
 
 
 def search_fandom(fandom_string: str) -> List[str]:
@@ -204,16 +220,13 @@ def search_fandom(fandom_string: str) -> List[str]:
         list: All results matching 'fandom_string'
     """
 
-    if _FANDOMS is None:
+    if _fandoms is None:
         msg = "Did you forget to call AO3.utils.load_fandoms()?"
         raise UnloadedError(msg)
-    if not _FANDOMS:
+    if not _fandoms:
         msg = "Did you forget to download the required resources with AO3.extra.download()?"
         raise UnloadedError(msg)
-    results: list[str] = []
-    for fandom in _FANDOMS:
-        if fandom_string.lower() in fandom.lower():
-            results.append(fandom)
+    results: list[str] = [fandom for fandom in _fandoms if fandom_string.lower() in fandom.lower()]
     return results
 
 
@@ -231,7 +244,7 @@ def workid_from_url(url: str) -> Optional[int]:
 
 
 def comment(
-    commentable: Union[Work, Chapter],
+    commentable: Commentable,
     comment_text: str,
     session: GuestSession,
     fullwork: bool = False,
@@ -239,7 +252,7 @@ def comment(
     email: str = "",
     name: str = "",
     pseud: Optional[str] = None,
-):
+) -> Response:
     """Leaves a comment on a specific work
 
     Args:
@@ -264,7 +277,7 @@ def comment(
         requests.models.Response: Response object
     """
 
-    at = commentable.authenticity_token if commentable.authenticity_token is not None else session.authenticity_token
+    at: str = commentable.authenticity_token if commentable.authenticity_token else session.authenticity_token  # type: ignore # FIXME
 
     headers: Dict[str, Any] = {
         "x-requested-with": "XMLHttpRequest",
@@ -272,7 +285,7 @@ def comment(
         "x-csrf-token": at,
     }
 
-    data: Dict[str, Any] = {}
+    data: Dict[str, Any] = {"authenticity_token": at}
     if fullwork:
         data["work_id"] = str(commentable.id)
     else:
@@ -281,34 +294,21 @@ def comment(
         data["comment_id"] = commentid
 
     if session.is_authed:
-        referer = f"https://archiveofourown.org/{'works' if fullwork else 'chapters'}/{commentable.id}"
+        # referer = f"https://archiveofourown.org/{'works' if fullwork else 'chapters'}/{commentable.id}"
 
         pseud_id = get_pseud_id(commentable, session, pseud)
         if pseud_id is None:
             msg = "Couldn't find your pseud's id"
             raise PseudError(msg)
 
-        data.update(
-            {
-                "authenticity_token": at,
-                "comment[pseud_id]": pseud_id,
-                "comment[comment_content]": comment_text,
-            },
-        )
+        data.update({"comment[pseud_id]": pseud_id, "comment[comment_content]": comment_text})
 
     else:
         if email == "" or name == "":
             msg = "You need to specify both an email and a name!"
             raise ValueError(msg)
 
-        data.update(
-            {
-                "authenticity_token": at,
-                "comment[email]": email,
-                "comment[name]": name,
-                "comment[comment_content]": comment_text,
-            },
-        )
+        data.update({"comment[email]": email, "comment[name]": name, "comment[comment_content]": comment_text})
 
     response = session.post("https://archiveofourown.org/comments.js", headers=headers, data=data)
     if response.status_code == 429:
@@ -321,12 +321,12 @@ def comment(
         raise InvalidIdError(msg)
 
     if response.status_code == 422:
-        json = response.json()
-        if "errors" in json and "auth_error" in json["errors"]:
+        json_ = response.json()
+        if "errors" in json_ and "auth_error" in json_["errors"]:
             msg = "Invalid authentication token. Try calling session.refresh_auth_token()"
             raise AuthError(msg)
 
-        msg = f"Unexpected json received:\n{json!s}"
+        msg = f"Unexpected json received:\n{json_!s}"
         raise UnexpectedResponseError(msg)
 
     if response.status_code == 200:
@@ -354,7 +354,7 @@ def delete_comment(comment: Comment, session: Optional[Session] = None) -> None:
         msg = "You don't have permission to do this"
         raise PermissionError(msg)
 
-    at = comment.authenticity_token if comment.authenticity_token is not None else session.authenticity_token
+    at: str = comment.authenticity_token if comment.authenticity_token is not None else session.authenticity_token  # type: ignore # FIXME
 
     data: Dict[str, Any] = {"authenticity_token": at, "_method": "delete"}
 
@@ -363,17 +363,18 @@ def delete_comment(comment: Comment, session: Optional[Session] = None) -> None:
         raise HTTPError
 
     soup = BeautifulSoup(req.content, "lxml")
-    if "auth error" in soup.title.getText().lower():
+    if soup.title and ("auth error" in soup.title.get_text().lower()):
         msg = "Invalid authentication token. Try calling session.refresh_auth_token()"
         raise AuthError(msg)
 
-    error = soup.find("div", {"id": "main"}).getText()
+    main_div = soup.find("div", {"id": "main"})
+    error = main_div.get_text() if main_div else ""
     if "you don't have permission" in error.lower():
         msg = "You don't have permission to do this"
         raise PermissionError(msg)
 
 
-def kudos(work: Work, session: GuestSession) -> bool:
+def kudos(work: Kudoable, session: GuestSession) -> bool:
     """Leave a 'kudos' in a specific work
 
     Args:
@@ -388,14 +389,14 @@ def kudos(work: Work, session: GuestSession) -> bool:
         bool: True if successful, False if you already left kudos there
     """
 
-    at = work.authenticity_token if work.authenticity_token is not None else session.authenticity_token
+    at: str = work.authenticity_token if work.authenticity_token is not None else session.authenticity_token  # type: ignore # FIXME
 
-    data: Dict[str, Any] = {"authenticity_token": at, "kudo[commentable_id]": work.id, "kudo[commentable_type]": "Work"}
     headers: Dict[str, Any] = {
-        "x-csrf-token": work.authenticity_token,
+        "x-csrf-token": at,
         "x-requested-with": "XMLHttpRequest",
         "referer": f"https://archiveofourown.org/work/{work.id}",
     }
+    data: Dict[str, Any] = {"authenticity_token": at, "kudo[commentable_id]": work.id, "kudo[commentable_type]": "Work"}
     response = session.post("https://archiveofourown.org/kudos.js", headers=headers, data=data)
     if response.status_code == 429:
         raise HTTPError
@@ -404,23 +405,30 @@ def kudos(work: Work, session: GuestSession) -> bool:
         return True  # Success
 
     if response.status_code == 422:
-        json = response.json()
-        if "errors" in json:
-            if "auth_error" in json["errors"]:
+        json_ = response.json()
+        if "errors" in json_:
+            if "auth_error" in json_["errors"]:
                 msg = "Invalid authentication token. Try calling session.refresh_auth_token()"
                 raise AuthError(msg)
 
-            if "user_id" in json["errors"] or "ip_address" in json["errors"]:
+            if "user_id" in json_["errors"] or "ip_address" in json_["errors"]:
                 return False  # User has already left kudos
 
-            if "no_commentable" in json["errors"]:
-                raise InvalidIdError("Invalid ID")
-        raise UnexpectedResponseError(f"Unexpected json received:\n" + str(json))
+            if "no_commentable" in json_["errors"]:
+                raise InvalidIdError
+        msg = f"Unexpected json received:\n{json_}"
+        raise UnexpectedResponseError(msg)
+    msg = f"Unexpected HTTP status code received ({response.status_code})"
+    raise UnexpectedResponseError(msg)
 
-    raise UnexpectedResponseError(f"Unexpected HTTP status code received ({response.status_code})")
 
-
-def subscribe(subscribable, worktype, session, unsubscribe=False, subid=None):
+def subscribe(
+    subscribable: Subscribable,
+    worktype: str,
+    session: Optional[GuestSession] = None,
+    unsubscribe: bool = False,
+    subid: Optional[Union[str, int]] = None,
+) -> Optional[Response]:
     """Subscribes to a work. Be careful, you can subscribe to a work multiple times
 
     Args:
@@ -438,16 +446,14 @@ def subscribe(subscribable, worktype, session, unsubscribe=False, subid=None):
     """
 
     if session is None:
-        session = subscribable.session
+        session = subscribable._session
     if session is None or not session.is_authed:
-        raise AuthError("Invalid session")
+        msg = "Invalid session"
+        raise AuthError(msg)
 
-    if subscribable.authenticity_token is not None:
-        at = subscribable.authenticity_token
-    else:
-        at = session.authenticity_token
+    at: str = subscribable.authenticity_token if subscribable.authenticity_token else session.authenticity_token  # type: ignore # FIXME
 
-    data = {
+    data: Dict[str, Any] = {
         "authenticity_token": at,
         "subscription[subscribable_id]": subscribable.id,
         "subscription[subscribable_type]": worktype.capitalize(),
@@ -456,22 +462,24 @@ def subscribe(subscribable, worktype, session, unsubscribe=False, subid=None):
     url = f"https://archiveofourown.org/users/{session.username}/subscriptions"
     if unsubscribe:
         if subid is None:
-            raise InvalidIdError("When unsubscribing, subid cannot be None")
+            msg = "When unsubscribing, subid cannot be None"
+            raise InvalidIdError(msg)
         url += f"/{subid}"
         data["_method"] = "delete"
-    req = session.session.post(url, data=data, allow_redirects=False)
+    req: Response = session.session.post(url, data=data, allow_redirects=False)  # type: ignore # FIXME
     if unsubscribe:
         return req
-    if req.status_code == 302:
-        if req.headers["Location"] == AO3_AUTH_ERROR_URL:
-            raise AuthError("Invalid authentication token. Try calling session.refresh_auth_token()")
-    else:
-        raise InvalidIdError(f"Invalid ID / worktype")
+    if req.status_code == 302 and req.headers["Location"] == AO3_AUTH_ERROR_URL:
+        msg = "Invalid authentication token. Try calling session.refresh_auth_token()"
+        raise AuthError(msg)
+
+    msg = "Invalid ID / worktype"
+    raise InvalidIdError(msg)
 
 
 def bookmark(
-    bookmarkable: Union[Work, Series],
-    session: Optional[Session] = None,
+    bookmarkable: Bookmarkable,
+    session: Optional[GuestSession] = None,
     notes: str = "",
     tags: Optional[List[str]] = None,
     collections: Optional[List[str]] = None,
@@ -493,12 +501,12 @@ def bookmark(
     """
 
     if session is None:
-        session = bookmarkable.session
+        session = bookmarkable._session
     if (session is None) or not session.is_authed:
         msg = "Invalid session"
         raise AuthError(msg)
 
-    at = bookmarkable.authenticity_token if bookmarkable.authenticity_token is not None else session.authenticity_token
+    at: str = bookmarkable.authenticity_token if bookmarkable.authenticity_token else session.authenticity_token  # type: ignore # FIXME
 
     if tags is None:
         tags = []
@@ -507,7 +515,8 @@ def bookmark(
 
     pseud_id = get_pseud_id(bookmarkable, session, pseud)
     if pseud_id is None:
-        raise PseudError("Couldn't find your pseud's id")
+        msg = "Couldn't find your pseud's id"
+        raise PseudError(msg)
 
     data: Dict[str, Any] = {
         "authenticity_token": at,
@@ -528,8 +537,8 @@ def bookmark(
 
 
 def delete_bookmark(
-    bookmarkid: Union[Work, Series],
-    session: Optional[Session] = None,
+    bookmarkid: int,
+    session: Optional[GuestSession] = None,
     auth_token: Optional[str] = None,
 ) -> None:
     """Remove a bookmark from the work/series
@@ -540,10 +549,11 @@ def delete_bookmark(
         auth_token (str, optional): Authenticity token. Defaults to None.
     """
     if (session is None) or not session.is_authed:
-        raise AuthError("Invalid session")
+        msg = "Invalid session"
+        raise AuthError(msg)
 
     data: Dict[str, Any] = {
-        "authenticity_token": session.authenticity_token if auth_token is None else auth_token,
+        "authenticity_token": auth_token if auth_token else session.authenticity_token,
         "_method": "delete",
     }
 
@@ -552,58 +562,71 @@ def delete_bookmark(
     handle_bookmark_errors(req)
 
 
-def handle_bookmark_errors(request):
+def handle_bookmark_errors(request: Response) -> NoReturn:
     if request.status_code == 302:
         if request.headers["Location"] == AO3_AUTH_ERROR_URL:
-            raise AuthError("Invalid authentication token. Try calling session.refresh_auth_token()")
-    else:
-        if request.status_code == 200:
-            soup = BeautifulSoup(request.content, "lxml")
-            error_div = soup.find("div", {"id": "error", "class": "error"})
-            if error_div is None:
-                raise UnexpectedResponseError("An unknown error occurred")
+            msg = "Invalid authentication token. Try calling session.refresh_auth_token()"
+            raise AuthError(msg)
+    elif request.status_code == 200:
+        soup = BeautifulSoup(request.content, "lxml")
+        error_div = soup.find("div", {"id": "error", "class": "error"})
+        if error_div is None:
+            msg = "An unknown error occurred"
+            raise UnexpectedResponseError(msg)
 
-            errors = [item.getText() for item in error_div.findAll("li")]
-            if len(errors) == 0:
-                raise BookmarkError("An unknown error occurred")
-            raise BookmarkError("Error(s) creating bookmark:" + " ".join(errors))
+        assert isinstance(error_div, Tag)
+        errors = [item.get_text() for item in error_div.findAll("li")]
+        if len(errors) == 0:
+            msg = "An unknown error occurred"
+            raise BookmarkError(msg)
+        raise BookmarkError("Error(s) creating bookmark:" + " ".join(errors))
 
-        raise UnexpectedResponseError(f"Unexpected HTTP status code received ({request.status_code})")
+    msg = f"Unexpected HTTP status code received ({request.status_code})"
+    raise UnexpectedResponseError(msg)
 
 
 def get_pseud_id(
     ao3object: Union[Work, Series, Chapter],
     session: Optional[GuestSession] = None,
     specified_pseud: Optional[str] = None,
-):
+) -> Optional[str]:
     if session is None:
-        session = ao3object.session
+        session = ao3object._session
     if session is None or not session.is_authed:
         raise AuthError("Invalid session")
 
-    soup = session.request(ao3object.url)
-    pseud = soup.find("input", {"name": re.compile(".+\\[pseud_id\\]")})
+    soup: BeautifulSoup = session.request(ao3object.url)  # type: ignore # FIXME
+    pseud = soup.find("input", {"name": re.compile(r".+\[pseud_id\]")})
     if pseud is None:
-        pseud = soup.find("select", {"name": re.compile(".+\\[pseud_id\\]")})
+        pseud = soup.find("select", {"name": re.compile(r".+\[pseud_id\]")})
         if pseud is None:
             return None
+
+        assert isinstance(pseud, Tag)
         pseud_id = None
         if specified_pseud:
-            for option in pseud.findAll("option"):
+            for option in pseud.find_all("option"):
+                assert isinstance(option, Tag)
                 if option.string == specified_pseud:
                     pseud_id = option.attrs["value"]
                     break
         else:
-            for option in pseud.findAll("option"):
+            for option in pseud.find_all("option"):
+                assert isinstance(option, Tag)
                 if "selected" in option.attrs and option.attrs["selected"] == "selected":
                     pseud_id = option.attrs["value"]
                     break
     else:
+        assert isinstance(pseud, Tag)
         pseud_id = pseud.attrs["value"]
     return pseud_id
 
 
-def collect(collectable: Work, session: Optional[Session] = None, collections: Optional[List[str]] = None) -> None:
+def collect(
+    collectable: Collectable,
+    session: Optional[GuestSession] = None,
+    collections: Optional[List[str]] = None,
+) -> None:
     """Invites a work to a collection. Be careful, you can collect a work multiple times
 
     Args:
@@ -613,11 +636,12 @@ def collect(collectable: Work, session: Optional[Session] = None, collections: O
     """
 
     if session is None:
-        session = collectable.session
+        session = collectable._session
     if (session is None) or not session.is_authed:
-        raise AuthError("Invalid session")
+        msg = "Invalid session"
+        raise AuthError(msg)
 
-    at = collectable.authenticity_token if collectable.authenticity_token is not None else session.authenticity_token
+    at: str = collectable.authenticity_token if collectable.authenticity_token else session.authenticity_token  # type: ignore # FIXME
 
     if collections is None:
         collections = []
@@ -625,26 +649,28 @@ def collect(collectable: Work, session: Optional[Session] = None, collections: O
     data: Dict[str, Any] = {"authenticity_token": at, "collection_names": ",".join(collections), "commit": "Add"}
 
     url = urljoin(collectable.url + "/", "collection_items")
-    req = session.session.post(url, data=data, allow_redirects=True)
+    req: Response = session.session.post(url, data=data, allow_redirects=True)  # type: ignore # FIXME
 
     if req.status_code == 302:
         if req.headers["Location"] == AO3_AUTH_ERROR_URL:
-            raise AuthError("Invalid authentication token. Try calling session.refresh_auth_token()")
+            msg = "Invalid authentication token. Try calling session.refresh_auth_token()"
+            raise AuthError(msg)
     elif req.status_code == 200:
         soup = BeautifulSoup(req.content, "lxml")
         notice_div = soup.find("div", {"class": "notice"})
-
         error_div = soup.find("div", {"class": "error"})
 
         if error_div is None and notice_div is None:
             raise UnexpectedResponseError("An unknown error occurred")
 
-        if error_div is not None:
-            errors = [item.getText() for item in error_div.findAll("ul")]
+        if isinstance(error_div, Tag):
+            errors = [item.get_text() for item in error_div.find_all("ul")]
 
             if len(errors) == 0:
-                raise CollectError("An unknown error occurred")
+                msg = "An unknown error occurred"
+                raise CollectError(msg)
 
             raise CollectError("We couldn't add your submission to the following collection(s): " + " ".join(errors))
-    else:
-        raise UnexpectedResponseError(f"Unexpected HTTP status code received ({req.status_code})")
+
+    msg = f"Unexpected HTTP status code received ({req.status_code})"
+    raise UnexpectedResponseError(msg)
